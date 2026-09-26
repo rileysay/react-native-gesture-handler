@@ -45,6 +45,10 @@ target 'BasicExample' do
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
 
+  target 'BasicExampleTests' do
+    inherit! :search_paths
+  end
+
   post_install do |installer|
     if is_ci_enabled? && is_rnrepo_enabled?
       rnrepo_post_install(installer)
