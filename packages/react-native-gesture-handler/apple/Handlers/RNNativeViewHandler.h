@@ -9,6 +9,9 @@
 #import "RNGestureHandler.h"
 
 @interface RNDummyGestureRecognizer : UIGestureRecognizer
+#if !TARGET_OS_OSX
+- (void)rnghObserveExternalScrollPan:(UIPanGestureRecognizer *)pan;
+#endif
 @end
 
 /*
@@ -32,4 +35,7 @@
 @end
 
 @interface RNNativeViewGestureHandler : RNGestureHandler
+#if !TARGET_OS_OSX
+- (void)rnghPrepareExternalScrollView:(UIScrollView *)scrollView;
+#endif
 @end

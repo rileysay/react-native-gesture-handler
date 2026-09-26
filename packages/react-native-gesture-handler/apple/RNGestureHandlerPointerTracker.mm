@@ -1,4 +1,5 @@
 #import "RNGestureHandlerPointerTracker.h"
+#import "RNGHExternalScroll.h"
 #import "RNGestureHandler.h"
 #import "RNGestureHandlerDetector.h"
 
@@ -89,7 +90,9 @@
   CGPoint absolutePos = CGPointMake(yFlippedAbsolutePos.x, windowHeight - yFlippedAbsolutePos.y);
   CGPoint relativePos = [_gestureHandler.recognizer.view convertPoint:absolutePos fromView:touch.window.contentView];
 #else
-  CGPoint relativePos = [touch locationInView:_gestureHandler.recognizer.view];
+  UIView *coordinateOwner =
+      RNGHExternalScrollOriginalView(_gestureHandler.recognizer) ?: _gestureHandler.recognizer.view;
+  CGPoint relativePos = [touch locationInView:coordinateOwner];
   CGPoint absolutePos = [touch locationInView:_gestureHandler.recognizer.view.window];
 #endif
 
@@ -301,12 +304,15 @@
   // the view's reactTag — they dispatch through the detector view — so a nil tag is not an
   // obstacle for them. The virtual recognizer's view has no reactTag at all, so without this
   // exemption virtual handlers would never deliver touch events.
-  if (_gestureHandler.recognizer.view.reactTag == nil && ![_gestureHandler usesNativeOrVirtualDetector]) {
+  RNGHUIView *eventOwner = _gestureHandler.recognizer.view;
+#if !TARGET_OS_OSX
+  eventOwner = RNGHExternalScrollOriginalView(_gestureHandler.recognizer) ?: eventOwner;
+#endif
+  if (eventOwner.reactTag == nil && ![_gestureHandler usesNativeOrVirtualDetector]) {
     return;
   }
 
-  [_gestureHandler sendTouchEventInState:[_gestureHandler state]
-                          forViewWithTag:_gestureHandler.recognizer.view.reactTag];
+  [_gestureHandler sendTouchEventInState:[_gestureHandler state] forViewWithTag:eventOwner.reactTag];
 }
 
 @end

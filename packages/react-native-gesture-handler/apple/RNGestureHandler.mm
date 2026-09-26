@@ -1,4 +1,5 @@
 #import "RNGestureHandler.h"
+#import "RNGHExternalScroll.h"
 #import "RNManualActivationRecognizer.h"
 
 #import "Handlers/RNNativeViewHandler.h"
@@ -372,12 +373,19 @@ static NSHashTable<RNGestureHandler *> *allGestureHandlers;
  */
 - (RNGHUIView *)chooseViewForInteraction:(UIGestureRecognizer *)recognizer
 {
-  return [self isViewParagraphComponent:recognizer.view] ? recognizer.view.subviews[0] : recognizer.view;
+  RNGHUIView *view = recognizer.view;
+#if !TARGET_OS_OSX
+  view = RNGHExternalScrollOriginalView(recognizer) ?: view;
+#endif
+  return [self isViewParagraphComponent:view] ? view.subviews[0] : view;
 }
 
 - (RNGHUIView *)coordinateView
 {
   RNGHUIView *recognizerView = _recognizer.view;
+#if !TARGET_OS_OSX
+  recognizerView = RNGHExternalScrollOriginalView(_recognizer) ?: recognizerView;
+#endif
   if ([self usesNativeOrVirtualDetector] && recognizerView == self.hostDetectorView &&
       recognizerView.subviews.count == 1) {
     return recognizerView.subviews[0];
@@ -460,7 +468,11 @@ static NSHashTable<RNGestureHandler *> *allGestureHandlers;
   NSNumber *tag = [self chooseViewForInteraction:recognizer].reactTag;
 
   if (tag == nil && _actionType == RNGestureHandlerActionTypeNativeDetector) {
-    tag = @(recognizer.view.tag);
+    RNGHUIView *view = recognizer.view;
+#if !TARGET_OS_OSX
+    view = RNGHExternalScrollOriginalView(recognizer) ?: view;
+#endif
+    tag = @(view.tag);
   }
 
   if (_virtualViewTag != nil && _actionType == RNGestureHandlerActionTypeVirtualDetector) {
@@ -592,7 +604,11 @@ static NSHashTable<RNGestureHandler *> *allGestureHandlers;
 
 - (RNGHUIView *)findViewForEvents
 {
-  return [self usesNativeOrVirtualDetector] ? self.hostDetectorView : self.recognizer.view;
+  RNGHUIView *view = self.recognizer.view;
+#if !TARGET_OS_OSX
+  view = RNGHExternalScrollOriginalView(self.recognizer) ?: view;
+#endif
+  return [self usesNativeOrVirtualDetector] ? self.hostDetectorView : view;
 }
 
 - (void)sendEvent:(RNGestureHandlerStateChange *)event
@@ -625,7 +641,7 @@ static NSHashTable<RNGestureHandler *> *allGestureHandlers;
     [self.emitter sendEvent:event
              withActionType:self.actionType
              forHandlerType:[self eventHandlerType]
-                    forView:self.recognizer.view];
+                    forView:[self findViewForEvents]];
   }
 }
 
@@ -708,6 +724,9 @@ static NSHashTable<RNGestureHandler *> *allGestureHandlers;
 + (RNGestureHandler *)findGestureHandlerByRecognizer:(UIGestureRecognizer *)recognizer
 {
   RNGestureHandler *handler = recognizer.gestureHandler;
+#if !TARGET_OS_OSX
+  handler = RNGHExternalScrollHandler(recognizer) ?: handler;
+#endif
   if (handler != nil) {
     return handler;
   }
@@ -717,6 +736,13 @@ static NSHashTable<RNGestureHandler *> *allGestureHandlers;
   RNGHUIView *view = recognizer.view;
   while (view != nil) {
     for (UIGestureRecognizer *candidateRecognizer in view.gestureRecognizers) {
+#if !TARGET_OS_OSX
+      // An externally hosted dummy owns only its explicitly registered pan;
+      // do not adopt unrelated gestures attached to the common ancestor.
+      if (RNGHExternalScrollIsRegistered(candidateRecognizer)) {
+        continue;
+      }
+#endif
       if ([candidateRecognizer isKindOfClass:[RNDummyGestureRecognizer class]]) {
         return candidateRecognizer.gestureHandler;
       }
@@ -815,8 +841,14 @@ static NSHashTable<RNGestureHandler *> *allGestureHandlers;
 {
   if ([self isUIScrollViewPanGestureRecognizer:otherGestureRecognizer] &&
       [gestureRecognizer isKindOfClass:[RNDummyGestureRecognizer class]]) {
+#if !TARGET_OS_OSX
+    RNGHUIScrollView *scrollView =
+        RNGHExternalScrollOwner(gestureRecognizer) ?: [self retrieveScrollView:gestureRecognizer.view];
+    if (scrollView && scrollView.panGestureRecognizer == otherGestureRecognizer) {
+#else
     RNGHUIScrollView *scrollView = [self retrieveScrollView:gestureRecognizer.view];
     if (scrollView && scrollView == otherGestureRecognizer.view) {
+#endif
       return YES;
     }
   }
@@ -843,6 +875,12 @@ static NSHashTable<RNGestureHandler *> *allGestureHandlers;
 
 - (RNGHUIScrollView *)retrieveScrollView:(RNGHUIView *)view
 {
+#if !TARGET_OS_OSX
+  UIScrollView *externalOwner = RNGHExternalScrollViewOwner(view);
+  if (externalOwner) {
+    return externalOwner;
+  }
+#endif
   if ([view isKindOfClass:[RCTEnhancedScrollView class]]) {
     return (RCTEnhancedScrollView *)view;
   }

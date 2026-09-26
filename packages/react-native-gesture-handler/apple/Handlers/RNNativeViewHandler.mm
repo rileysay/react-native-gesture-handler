@@ -7,6 +7,7 @@
 //
 
 #import "RNNativeViewHandler.h"
+#import "../RNGHExternalScroll.h"
 
 #if !TARGET_OS_OSX
 #import <UIKit/UIGestureRecognizerSubclass.h>
@@ -20,6 +21,12 @@
 
 @implementation RNDummyGestureRecognizer {
   __weak RNGestureHandler *_gestureHandler;
+#if !TARGET_OS_OSX
+  // Pointer event delivery is optional. Native gesture lifetime must still
+  // cover every touch when the handler does not request JS pointer data.
+  NSMutableSet<UITouch *> *_externalTouches;
+  BOOL _externalStreamFinished;
+#endif
 }
 
 - (id)initWithGestureHandler:(RNGestureHandler *)gestureHandler
@@ -33,6 +40,14 @@
 #if !TARGET_OS_OSX
 - (void)touchesBegan:(NSSet<RNGHUITouch *> *)touches withEvent:(UIEvent *)event
 {
+  if (RNGHExternalScrollIsRegistered(self)) {
+    if (_externalTouches.count == 0) {
+      _externalStreamFinished = NO;
+      _externalTouches = [NSMutableSet new];
+    }
+    [_externalTouches unionSet:touches];
+  }
+  RNGHExternalScrollRecordTouches(self, touches);
   [_gestureHandler setCurrentPointerTypeForEvent:event];
   [_gestureHandler.pointerTracker touchesBegan:touches withEvent:event];
 }
@@ -45,7 +60,24 @@
 
 - (void)touchesEnded:(NSSet<RNGHUITouch *> *)touches withEvent:(UIEvent *)event
 {
+  BOOL external = RNGHExternalScrollIsRegistered(self);
+  if (external) {
+    [_externalTouches minusSet:touches];
+  }
   [_gestureHandler.pointerTracker touchesEnded:touches withEvent:event];
+  if (external) {
+    // UIKit may notify this recognizer before or after the owned pan. Respect
+    // a native terminal state, or finish after our last touch is delivered.
+    UIPanGestureRecognizer *pan = RNGHExternalScrollOwner(self).panGestureRecognizer;
+    if (pan) {
+      [self rnghObserveExternalScrollPan:pan];
+    }
+    if (_externalTouches.count == 0 && !_externalStreamFinished) {
+      BOOL active = self.state == UIGestureRecognizerStateBegan || self.state == UIGestureRecognizerStateChanged;
+      [self rnghFinishExternalScrollWithState:active ? UIGestureRecognizerStateEnded : UIGestureRecognizerStateFailed];
+    }
+    return;
+  }
   self.state = UIGestureRecognizerStateFailed;
 
   // For now, we are handling only the scroll view case.
@@ -58,7 +90,11 @@
 - (void)touchesCancelled:(NSSet<RNGHUITouch *> *)touches withEvent:(UIEvent *)event
 {
   [_gestureHandler.pointerTracker touchesCancelled:touches withEvent:event];
-  self.state = UIGestureRecognizerStateCancelled;
+  if (RNGHExternalScrollIsRegistered(self)) {
+    [self rnghFinishExternalScrollWithState:UIGestureRecognizerStateCancelled];
+  } else {
+    self.state = UIGestureRecognizerStateCancelled;
+  }
   [self reset];
 }
 
@@ -89,21 +125,75 @@
 - (void)reset
 {
   [_gestureHandler.pointerTracker reset];
+#if !TARGET_OS_OSX
+  [_externalTouches removeAllObjects];
+  _externalStreamFinished = YES;
+  RNGHExternalScrollResetTouches(self);
+#endif
   [super reset];
   [_gestureHandler reset];
 }
 
+#if !TARGET_OS_OSX
+- (void)rnghFinishExternalScrollWithState:(UIGestureRecognizerState)state
+{
+  if (_externalStreamFinished) {
+    return;
+  }
+  _externalStreamFinished = YES;
+  self.state = state;
+}
+
+- (void)rnghObserveExternalScrollPan:(UIPanGestureRecognizer *)pan
+{
+  // Mirror activation even if UIKit processes the real pan after the dummy
+  // in this touch delivery. Pointer tracking remains on the relocated dummy.
+  if (_externalStreamFinished || RNGHExternalScrollOwner(self).panGestureRecognizer != pan) {
+    return;
+  }
+  switch (pan.state) {
+    case UIGestureRecognizerStateBegan:
+    case UIGestureRecognizerStateChanged:
+      if (_externalTouches.count != 0) {
+        self.state = pan.state;
+      }
+      break;
+    case UIGestureRecognizerStateEnded:
+    case UIGestureRecognizerStateCancelled:
+    case UIGestureRecognizerStateFailed: {
+      BOOL active = self.state == UIGestureRecognizerStateBegan || self.state == UIGestureRecognizerStateChanged;
+      if (_externalTouches.count != 0 || active) {
+        UIGestureRecognizerState state = UIGestureRecognizerStateFailed;
+        if (active) {
+          state = pan.state == UIGestureRecognizerStateEnded ? UIGestureRecognizerStateEnded
+                                                             : UIGestureRecognizerStateCancelled;
+        }
+        [self rnghFinishExternalScrollWithState:state];
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+#endif
+
 - (void)updateStateIfScrollView
 {
+#if !TARGET_OS_OSX
+  UIScrollView *externalOwner = RNGHExternalScrollOwner(self);
+  if (externalOwner) {
+    [self rnghObserveExternalScrollPan:externalOwner.panGestureRecognizer];
+    return;
+  }
+#endif
   RNGHUIScrollView *scrollView = [_gestureHandler retrieveScrollView:self.view];
   if (!scrollView) {
     return;
   }
-  for (UIGestureRecognizer *scrollViewGestureRecognizer in scrollView.gestureRecognizers) {
-    if ([_gestureHandler isUIScrollViewPanGestureRecognizer:scrollViewGestureRecognizer]) {
-      self.state = scrollViewGestureRecognizer.state;
-    }
-  }
+#if !TARGET_OS_OSX
+  self.state = scrollView.panGestureRecognizer.state;
+#endif
 }
 
 @end
@@ -132,6 +222,13 @@
   return self;
 }
 
+#if !TARGET_OS_OSX
+- (void)rnghPrepareExternalScrollView:(UIScrollView *)scrollView
+{
+  scrollView.delaysContentTouches = _delaysChildPressedState;
+}
+#endif
+
 - (void)updateConfig:(NSDictionary *)config
 {
   [super updateConfig:config];
@@ -146,7 +243,9 @@
   // Config may be updated after the handler is bound to a view — re-apply to the connected
   // scroll view if there is one.
   if (self.recognizer.view != nil) {
-    [self retrieveScrollView:self.recognizer.view].delaysContentTouches = _delaysChildPressedState;
+    UIScrollView *scrollView =
+        RNGHExternalScrollOwner(self.recognizer) ?: [self retrieveScrollView:self.recognizer.view];
+    scrollView.delaysContentTouches = _delaysChildPressedState;
   }
 #endif
 }
@@ -161,6 +260,7 @@
 
 #if !TARGET_OS_OSX
   [self bindToUIKitView:view];
+  [NSNotificationCenter.defaultCenter postNotificationName:RNGHExternalScrollHandlerDidBindNotification object:self];
 #else
   [super bindToView:view];
 #endif
@@ -169,6 +269,7 @@
 - (void)unbindFromView
 {
 #if !TARGET_OS_OSX
+  RNGHExternalScrollRestoreHandler(self);
   if ([_boundView isKindOfClass:[UIControl class]]) {
     [(UIControl *)_boundView removeTarget:self action:NULL forControlEvents:UIControlEventAllEvents];
   }
@@ -182,6 +283,9 @@
   _stateObserver = nil;
 
   [super unbindFromView];
+#if !TARGET_OS_OSX
+  [NSNotificationCenter.defaultCenter postNotificationName:RNGHExternalScrollHandlerDidUnbindNotification object:self];
+#endif
 }
 
 - (void)dispatchStateChange:(RNGestureHandlerState)newState
@@ -415,7 +519,8 @@
   CGPoint absolutePosition = CGPointMake(yFlippedAbsolute.x, windowHeight - yFlippedAbsolute.y);
   CGPoint position = [recognizer.view convertPoint:absolutePosition fromView:recognizer.view.window.contentView];
 #else
-  CGPoint position = [recognizer locationInView:recognizer.view];
+  UIView *coordinateOwner = RNGHExternalScrollOriginalView(recognizer) ?: recognizer.view;
+  CGPoint position = [recognizer locationInView:coordinateOwner];
   CGPoint absolutePosition = [recognizer locationInView:nil];
 #endif
 

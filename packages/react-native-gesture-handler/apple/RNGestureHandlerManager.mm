@@ -8,6 +8,7 @@
 #import <React/RCTUIManager.h>
 #import <React/RCTViewManager.h>
 
+#import "RNGHExternalScroll.h"
 #import "RNGestureHandler.h"
 #import "RNGestureHandlerActionType.h"
 #import "RNGestureHandlerEventHandlerType.h"
@@ -373,9 +374,21 @@ static BOOL RNGHIsScreensTouchHandlerHost(RNGHUIView *view)
   // particular if we have one PanHandler and ScrollView that can work simultaniously then when
   // the Pan handler activates it would still tigger cancel events.
   // Once the upstream fix lands the line below along with this comment can be removed
+#if !TARGET_OS_OSX
+  if (RNGHExternalScrollIsRegistered(gestureRecognizer)) {
+    // Header touches do not bubble through ScrollView.js and need root
+    // cancellation; list-origin streams retain RN scroll responder semantics.
+    if (!RNGHExternalScrollHasHeaderTouches(gestureRecognizer)) {
+      return;
+    }
+  } else if ([gestureRecognizer.view isKindOfClass:[RNGHScrollView class]]) {
+    return;
+  }
+#else
   if ([gestureRecognizer.view isKindOfClass:[RNGHScrollView class]]) {
     return;
   }
+#endif
 
   UIGestureRecognizer *touchHandler = nil;
 
